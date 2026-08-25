@@ -40,6 +40,7 @@ interface SendTextArgs {
   conversationId: string
   contactId: string
   text: string
+  messageId?: string
 }
 
 interface SendTemplateArgs {
@@ -50,6 +51,7 @@ interface SendTemplateArgs {
   templateName: string
   language?: string
   params?: string[]
+  messageId?: string
 }
 
 export async function engineSendText(args: SendTextArgs): Promise<{ whatsapp_message_id: string }> {
@@ -69,6 +71,7 @@ interface SendAudioArgs {
   contactId: string
   /** Public URL — see SendVoiceStepConfig in types/index.ts. */
   mediaUrl: string
+  messageId?: string
 }
 
 /**
@@ -170,6 +173,7 @@ interface SendMediaArgs {
   mediaUrl: string
   caption?: string
   filename?: string
+  messageId?: string
 }
 
 /**
@@ -272,6 +276,7 @@ interface SendInteractiveArgs {
   conversationId: string
   contactId: string
   payload: InteractiveMessagePayload
+  messageId?: string
 }
 
 /**

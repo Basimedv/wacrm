@@ -86,17 +86,17 @@ export async function GET(request: Request) {
 
       const now = new Date()
       if (prevFire > now) continue
-      const lastTriggered = automation.last_triggered_at
-        ? new Date(automation.last_triggered_at as string)
+      const lastTriggered = automation.last_executed_at
+        ? new Date(automation.last_executed_at as string)
         : null
       if (lastTriggered && lastTriggered >= prevFire) continue
 
       const orClause = lastTriggered
-        ? `last_triggered_at.is.null,last_triggered_at.lt.${prevFire.toISOString()}`
-        : `last_triggered_at.is.null`
+        ? `last_executed_at.is.null,last_executed_at.lt.${prevFire.toISOString()}`
+        : `last_executed_at.is.null`
       const { data: claimed } = await admin
         .from('automations')
-        .update({ last_triggered_at: prevFire.toISOString() })
+        .update({ last_executed_at: prevFire.toISOString() })
         .eq('id', automation.id)
         .or(orClause)
         .select('id')

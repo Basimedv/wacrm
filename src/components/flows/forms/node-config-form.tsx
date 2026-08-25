@@ -989,6 +989,7 @@ function SendMediaForm({
       )}
 
       {!isLink && (
+      <>
       <div>
         <label className="mb-1 block text-xs text-muted-foreground">{t("mediaTypeLabel")}</label>
         <Select
@@ -1074,6 +1075,7 @@ function SendMediaForm({
           }}
         />
       </div>
+      </>
       )}
 
       <TextRow
