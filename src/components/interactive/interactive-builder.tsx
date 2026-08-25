@@ -57,6 +57,16 @@ interface InteractiveBuilderProps {
   onChange: (payload: InteractiveMessagePayload) => void;
   /** Show the live WhatsApp-style preview beside the form. Default true. */
   showPreview?: boolean;
+  /**
+   * "auto" (default) goes side-by-side with the preview at md: viewport
+   * widths — fine when the builder has the full page to itself (inbox
+   * composer, quick-replies manager). "stacked" always stacks the form
+   * above the preview regardless of viewport width — use this whenever
+   * the builder is embedded in a narrow fixed-width container (e.g. the
+   * automation step card), since md: reacts to the browser window, not
+   * the parent's actual width, and will squeeze the form into a sliver.
+   */
+  layout?: "auto" | "stacked";
 }
 
 /**
@@ -70,6 +80,7 @@ export function InteractiveBuilder({
   value,
   onChange,
   showPreview = true,
+  layout = "auto",
 }: InteractiveBuilderProps) {
   const [advanced, setAdvanced] = useState(false);
   const validation = validateInteractivePayload(value);
@@ -88,7 +99,7 @@ export function InteractiveBuilder({
   };
 
   return (
-    <div className="flex flex-col gap-4 md:flex-row">
+    <div className={cn("flex flex-col gap-4", layout === "auto" && "md:flex-row")}>
       <div className="flex min-w-0 flex-1 flex-col gap-3">
         {/* Kind toggle */}
         <div className="flex gap-2">
@@ -110,7 +121,7 @@ export function InteractiveBuilder({
             maxLength={INTERACTIVE_LIMITS.bodyMaxLength}
             onChange={(e) => setField({ body: e.target.value })}
             placeholder="What the customer reads above the options"
-            className="min-h-20 bg-muted text-foreground"
+            className="min-h-20 w-full bg-muted text-foreground"
           />
         </Field>
 
@@ -161,7 +172,12 @@ export function InteractiveBuilder({
       </div>
 
       {showPreview && (
-        <div className="flex shrink-0 flex-col gap-1.5 md:w-[280px]">
+        <div
+          className={cn(
+            "flex shrink-0 flex-col gap-1.5",
+            layout === "auto" && "md:w-[280px]",
+          )}
+        >
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             Preview
           </span>

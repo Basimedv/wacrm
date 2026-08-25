@@ -8,6 +8,8 @@ import type {
   InteractiveReplyTriggerConfig,
   TagTriggerConfig,
   SendMessageStepConfig,
+  SendVoiceStepConfig,
+  SendMediaStepConfig,
   SendButtonsStepConfig,
   SendListStepConfig,
   SendTemplateStepConfig,
@@ -21,7 +23,7 @@ import type {
 import { supabaseAdmin } from './admin-client'
 import { addContactTagIfAbsent } from '@/lib/contacts/tag-write'
 import { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from '@/lib/contacts/tag-chain'
-import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
+import { engineSendText, engineSendTemplate, engineSendInteractive, engineSendAudio, engineSendMedia } from './meta-send'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 
@@ -42,6 +44,7 @@ export interface AutomationContext {
   agent_id?: string
   /** Button / list-row id the customer tapped, for interactive_reply. */
   interactive_reply_id?: string
+  message_id?: string
 }
 
 export interface DispatchInput {
@@ -172,6 +175,25 @@ export async function resumePendingExecution(pending: {
 // ------------------------------------------------------------
 // Internal execution
 // ------------------------------------------------------------
+
+export async function runTimeBasedAutomation(automation: Automation): Promise<void> {
+  try {
+    const cfg = automation.trigger_config as { contact_id?: string } | null
+    const contactId = cfg?.contact_id || null
+    if (!contactId) {
+      console.warn('[automations] time_based automation has no contact_id configured:', automation.id)
+      return
+    }
+    await executeAutomation(automation, {
+      accountId: automation.account_id,
+      triggerType: 'time_based',
+      contactId,
+      context: {},
+    })
+  } catch (err) {
+    console.error('[automations] time_based execute failed:', automation.id, err)
+  }
+}
 
 async function executeAutomation(automation: Automation, input: DispatchInput) {
   const db = supabaseAdmin()
@@ -357,14 +379,48 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       const text = interpolate(cfg.text, args)
       if (!text.trim()) throw new Error('send_message has empty text')
       const conversationId = await resolveConversationId(args)
-      const { whatsapp_message_id } = await engineSendText({
+     const { whatsapp_message_id } = await engineSendText({
+  accountId: args.automation.account_id,
+  userId: args.automation.user_id,
+  conversationId,
+  contactId: args.contactId,
+  text,
+  messageId: args.context.message_id,   // ADD THIS
+})
+      return `sent via Meta (${whatsapp_message_id})`
+    }
+
+    case 'send_voice': {
+      const cfg = step.step_config as SendVoiceStepConfig
+      if (!args.contactId) throw new Error('send_voice needs a contact')
+      if (!cfg.media_url) throw new Error('send_voice has no recording')
+      const conversationId = await resolveConversationId(args)
+      const { whatsapp_message_id } = await engineSendAudio({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
         conversationId,
         contactId: args.contactId,
-        text,
+        mediaUrl: cfg.media_url,
       })
-      return `sent via Meta (${whatsapp_message_id})`
+      return `voice note sent via Meta (${whatsapp_message_id})`
+    }
+
+    case 'send_media': {
+      const cfg = step.step_config as SendMediaStepConfig
+      if (!args.contactId) throw new Error('send_media needs a contact')
+      if (!cfg.media_url) throw new Error('send_media has no file attached')
+      const conversationId = await resolveConversationId(args)
+      const { whatsapp_message_id } = await engineSendMedia({
+        accountId: args.automation.account_id,
+        userId: args.automation.user_id,
+        conversationId,
+        contactId: args.contactId,
+        kind: cfg.media_kind,
+        mediaUrl: cfg.media_url,
+        caption: cfg.caption,
+        filename: cfg.filename,
+      })
+      return `${cfg.media_kind} sent via Meta (${whatsapp_message_id})`
     }
 
     case 'send_buttons':

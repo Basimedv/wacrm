@@ -1,20 +1,11 @@
 import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
+import { CronExpressionParser } from 'cron-parser'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
-import { resumePendingExecution } from '@/lib/automations/engine'
+import { resumePendingExecution, runTimeBasedAutomation } from '@/lib/automations/engine'
 import type { AutomationContext } from '@/lib/automations/engine'
+import type { Automation } from '@/types'
 
-/**
- * Drain due `automation_pending_executions` rows. Meant to be hit
- * on a schedule (Vercel Cron / external pinger) — requires a shared
- * secret via the `x-cron-secret` header to match
- * `AUTOMATION_CRON_SECRET`.
- *
- * The claim step (status = 'running') serves as a simple lock so
- * overlapping invocations don't double-process rows. Best-effort
- * only; expensive SELECT ... FOR UPDATE is avoided in favor of a
- * two-step UPDATE-by-id.
- */
 export async function GET(request: Request) {
   const expected = process.env.AUTOMATION_CRON_SECRET
   if (!expected) {
@@ -31,6 +22,7 @@ export async function GET(request: Request) {
   }
 
   const admin = supabaseAdmin()
+
   const { data: due, error } = await admin
     .from('automation_pending_executions')
     .select('*')
@@ -40,10 +32,9 @@ export async function GET(request: Request) {
     .limit(50)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  if (!due || due.length === 0) return NextResponse.json({ processed: 0 })
 
   let processed = 0
-  for (const row of due) {
+  for (const row of due ?? []) {
     const { data: claim } = await admin
       .from('automation_pending_executions')
       .update({ status: 'running' })
@@ -56,8 +47,6 @@ export async function GET(request: Request) {
     await resumePendingExecution({
       id: row.id as string,
       automation_id: row.automation_id as string,
-      // account_id is NOT NULL on automation_pending_executions
-      // post-017; the engine uses it for tenant-scoped lookups.
       account_id: row.account_id as string,
       user_id: row.user_id as string,
       contact_id: (row.contact_id as string | null) ?? null,
@@ -70,5 +59,63 @@ export async function GET(request: Request) {
     processed++
   }
 
-  return NextResponse.json({ processed })
+  const { data: timeBased, error: tbErr } = await admin
+    .from('automations')
+    .select('*')
+    .eq('trigger_type', 'time_based')
+    .eq('is_active', true)
+
+  let timeBasedFired = 0
+  if (tbErr) {
+    console.error('[automations] cron: fetch time_based failed:', tbErr)
+  } else {
+    for (const automation of (timeBased ?? []) as Automation[]) {
+      const cfg = automation.trigger_config as { schedule?: string } | null
+      const rawSchedule = cfg?.schedule?.trim()
+      if (!rawSchedule) continue
+
+      let prevFire: Date
+      try {
+        const cronExpr = normalizeToCron(rawSchedule)
+        const interval = CronExpressionParser.parse(cronExpr, { currentDate: new Date() })
+        prevFire = interval.prev().toDate()
+      } catch (err) {
+        console.warn('[automations] cron: bad schedule on', automation.id, rawSchedule, err)
+        continue
+      }
+
+      const now = new Date()
+      if (prevFire > now) continue
+      const lastTriggered = automation.last_triggered_at
+        ? new Date(automation.last_triggered_at as string)
+        : null
+      if (lastTriggered && lastTriggered >= prevFire) continue
+
+      const orClause = lastTriggered
+        ? `last_triggered_at.is.null,last_triggered_at.lt.${prevFire.toISOString()}`
+        : `last_triggered_at.is.null`
+      const { data: claimed } = await admin
+        .from('automations')
+        .update({ last_triggered_at: prevFire.toISOString() })
+        .eq('id', automation.id)
+        .or(orClause)
+        .select('id')
+        .maybeSingle()
+      if (!claimed) continue
+
+      await runTimeBasedAutomation(automation)
+      timeBasedFired++
+    }
+  }
+
+  return NextResponse.json({ processed, timeBasedFired })
+}
+
+function normalizeToCron(schedule: string): string {
+  const hhmm = schedule.match(/^([0-1]?\d|2[0-3]):([0-5]\d)$/)
+  if (hhmm) {
+    const [, h, m] = hhmm
+    return `${Number(m)} ${Number(h)} * * *`
+  }
+  return schedule
 }

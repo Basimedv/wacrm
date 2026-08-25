@@ -3,6 +3,7 @@ import {
   sendInteractiveList,
   sendMediaMessage,
   sendTextMessage,
+  sendTypingIndicator,
   type InteractiveButton,
   type InteractiveListSection,
   type MediaKind,
@@ -276,6 +277,7 @@ interface SendInteractiveButtonsEngineArgs {
   buttons: InteractiveButton[]
   headerText?: string
   footerText?: string
+  messageId?: string
 }
 
 interface SendInteractiveListEngineArgs {
@@ -288,6 +290,7 @@ interface SendInteractiveListEngineArgs {
   sections: InteractiveListSection[]
   headerText?: string
   footerText?: string
+  messageId?: string
 }
 
 /**

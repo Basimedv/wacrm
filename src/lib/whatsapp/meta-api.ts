@@ -226,6 +226,51 @@ export interface SendTextMessageArgs {
 }
 
 /**
+ * Mark an inbound message as read AND show the "typing…" indicator to
+ * the customer for up to 25 seconds (or until we send a reply,
+ * whichever comes first — Meta clears it automatically on our next
+ * send). Meant to be called the moment a message arrives, before the
+ * automation engine runs, so the customer sees immediate feedback
+ * instead of silence while we process.
+ *
+ * Meta's single "mark read" endpoint doubles as the typing-indicator
+ * trigger when `typing_indicator` is included — there's no separate
+ * "start typing" call.
+ */
+export async function sendTypingIndicator(args: {
+  phoneNumberId: string
+  accessToken: string
+  messageId: string
+}): Promise<void> {
+  const { phoneNumberId, accessToken, messageId } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const body = {
+    messaging_product: 'whatsapp',
+    status: 'read',
+    message_id: messageId,
+    typing_indicator: { type: 'text' },
+  }
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(body),
+    })
+    if (!response.ok) {
+      console.warn('[typing-indicator] Meta rejected mark-read/typing:', response.status)
+    }
+  } catch (err) {
+    // Non-fatal — a failed typing indicator should never block message
+    // processing. Same fire-and-forget posture as the rest of the
+    // webhook's best-effort side effects.
+    console.warn('[typing-indicator] request failed:', err)
+  }
+}
+
+/**
  * Send a free-form WhatsApp text message.
  * Only works inside the 24-hour customer service window.
  */
@@ -239,7 +284,12 @@ export async function sendTextMessage(
     recipient_type: 'individual',
     to,
     type: 'text',
-    text: { body: text },
+    // preview_url opts into WhatsApp fetching Open Graph metadata for
+    // any URL in the body and rendering it as a link-preview card
+    // (thumbnail + title + domain) — off by default on Meta's Cloud
+    // API. The preview's actual content (image/title) comes from the
+    // target page's own Open Graph tags, not from us.
+    text: { body: text, preview_url: true },
   }
   if (contextMessageId) {
     body.context = { message_id: contextMessageId }

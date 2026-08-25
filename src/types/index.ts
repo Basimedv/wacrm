@@ -443,6 +443,8 @@ export type AutomationTriggerType =
 
 export type AutomationStepType =
   | 'send_message'
+  | 'send_voice'
+  | 'send_media'
   | 'send_buttons'
   | 'send_list'
   | 'send_template'
@@ -489,6 +491,36 @@ export type AutomationTriggerConfig =
 
 export interface SendMessageStepConfig {
   text: string;
+}
+/**
+ * Voice note step. `media_url` is a public URL (uploaded via
+ * uploadAccountMedia to the chat-media bucket, same as the inbox
+ * composer's voice recorder) pointing at an Ogg/Opus file — WhatsApp
+ * renders that as a playable voice note rather than a file attachment.
+ * Only usable on event-driven triggers (e.g. keyword_match) since Meta
+ * has no template header type for audio, so it can't escape the
+ * 24-hour customer window the way send_template can.
+ */
+export interface SendVoiceStepConfig {
+  media_url: string;
+}
+/**
+ * Photo / video / document step. `media_kind` picks which Meta media
+ * type to send — the upload picker in the builder filters file types
+ * accordingly. `caption` is accepted for image/video only (Meta
+ * rejects it on documents unless paired with filename — actually
+ * documents DO accept a caption; only audio never does, per
+ * sendMediaMessage's rules in meta-api.ts). `filename` only applies
+ * to documents (shown as the file name in the recipient's chat).
+ * Same 24-hour-window caveat as send_voice: no template escape hatch
+ * for media on WhatsApp, so this only works reliably on event-driven
+ * triggers (e.g. keyword_match), not time_based.
+ */
+export interface SendMediaStepConfig {
+  media_kind: 'image' | 'video' | 'document';
+  media_url: string;
+  caption?: string;
+  filename?: string;
 }
 
 /**
@@ -561,6 +593,8 @@ export interface SendWebhookStepConfig {
 
 export type AutomationStepConfig =
   | SendMessageStepConfig
+  | SendVoiceStepConfig
+  | SendMediaStepConfig
   | SendButtonsStepConfig
   | SendListStepConfig
   | SendTemplateStepConfig

@@ -28,9 +28,9 @@ export const MEDIA_MAX_BYTES = 16 * 1024 * 1024;
  */
 export const MEDIA_MAX_BYTES_BY_KIND = {
   image: 5 * 1024 * 1024,
-  video: 16 * 1024 * 1024,
+  video: 50 * 1024 * 1024,
   audio: 16 * 1024 * 1024,
-  document: 16 * 1024 * 1024,
+  document: 100 * 1024 * 1024,
 } as const;
 
 /**

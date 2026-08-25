@@ -248,10 +248,12 @@ function validateNode(
         media_url?: string;
         caption?: string;
         next_node_key?: string;
+        is_link?: boolean;
       };
       if (
-        !cfg.media_type ||
-        !["image", "video", "document"].includes(cfg.media_type)
+        !cfg.is_link &&
+        (!cfg.media_type ||
+          !["image", "video", "document"].includes(cfg.media_type))
       ) {
         issues.push({
           severity: "error",
@@ -267,7 +269,17 @@ function validateNode(
           scope: "node",
           node_key: node.node_key,
           field: "media_url",
-          message: "Send-media node needs a file (upload one before activating).",
+          message: cfg.is_link
+            ? "Send-media node needs a link (paste a URL before activating)."
+            : "Send-media node needs a file (upload one before activating).",
+        });
+      } else if (cfg.is_link && !/^https?:\/\//i.test(cfg.media_url.trim())) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "media_url",
+          message: "Link must start with http:// or https://.",
         });
       }
       // Caption cap mirrors Meta's interactive body cap; documented as a

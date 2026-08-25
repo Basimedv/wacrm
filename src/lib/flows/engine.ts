@@ -607,23 +607,41 @@ async function advanceFromNodeKey(
     if (node.node_type === "send_media") {
       const cfg = node.config as unknown as SendMediaNodeConfig;
       try {
-        const { whatsapp_message_id } = await engineSendMedia({
-          accountId: run.account_id,
-    userId: run.user_id,
-          conversationId: run.conversation_id!,
-          contactId: run.contact_id!,
-          kind: cfg.media_type,
-          link: cfg.media_url,
-          caption: cfg.caption
-            ? interpolateVars(cfg.caption, run.vars)
-            : undefined,
-          filename: cfg.filename,
-        });
-        await logEvent(db, run.id, "message_sent", node.node_key, {
-          node_type: "send_media",
-          media_type: cfg.media_type,
-          whatsapp_message_id,
-        });
+        if (cfg.is_link) {
+          const linkText = cfg.caption
+            ? `${interpolateVars(cfg.caption, run.vars)}\n${cfg.media_url}`
+            : cfg.media_url;
+          const { whatsapp_message_id } = await engineSendText({
+            accountId: run.account_id,
+            userId: run.user_id,
+            conversationId: run.conversation_id!,
+            contactId: run.contact_id!,
+            text: linkText,
+          });
+          await logEvent(db, run.id, "message_sent", node.node_key, {
+            node_type: "send_media",
+            media_type: "link",
+            whatsapp_message_id,
+          });
+        } else {
+          const { whatsapp_message_id } = await engineSendMedia({
+            accountId: run.account_id,
+            userId: run.user_id,
+            conversationId: run.conversation_id!,
+            contactId: run.contact_id!,
+            kind: cfg.media_type,
+            link: cfg.media_url,
+            caption: cfg.caption
+              ? interpolateVars(cfg.caption, run.vars)
+              : undefined,
+            filename: cfg.filename,
+          });
+          await logEvent(db, run.id, "message_sent", node.node_key, {
+            node_type: "send_media",
+            media_type: cfg.media_type,
+            whatsapp_message_id,
+          });
+        }
       } catch (err) {
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "send_media_failed",

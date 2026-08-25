@@ -871,6 +871,7 @@ interface SendMediaCfg {
   media_url?: string;
   caption?: string;
   filename?: string;
+  is_link?: boolean;
   next_node_key?: string;
 }
 
@@ -943,8 +944,51 @@ function SendMediaForm({
     onUpdateConfig({ media_url: "", filename: "" });
   };
 
+  const isLink = cfg.is_link ?? false;
+
   return (
     <>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("sourceModeLabel")}</label>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => onUpdateConfig({ is_link: false, media_url: "", filename: "" })}
+            className={`flex-1 rounded-md border px-3 py-1.5 text-xs transition-colors ${
+              !isLink
+                ? "border-cyan-400 bg-cyan-400/10 text-cyan-300"
+                : "border-border bg-muted text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {t("uploadFileTab")}
+          </button>
+          <button
+            type="button"
+            onClick={() => onUpdateConfig({ is_link: true, media_url: "", filename: "" })}
+            className={`flex-1 rounded-md border px-3 py-1.5 text-xs transition-colors ${
+              isLink
+                ? "border-cyan-400 bg-cyan-400/10 text-cyan-300"
+                : "border-border bg-muted text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {t("pasteLinkTab")}
+          </button>
+        </div>
+      </div>
+
+      {isLink && (
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">{t("linkUrlLabel")}</label>
+          <Input
+            value={cfg.media_url ?? ""}
+            onChange={(e) => onUpdateConfig({ media_url: e.target.value })}
+            placeholder={t("linkUrlPlaceholder")}
+            className="bg-muted text-xs"
+          />
+        </div>
+      )}
+
+      {!isLink && (
       <div>
         <label className="mb-1 block text-xs text-muted-foreground">{t("mediaTypeLabel")}</label>
         <Select
@@ -1030,6 +1074,7 @@ function SendMediaForm({
           }}
         />
       </div>
+      )}
 
       <TextRow
         label={t("captionLabel")}
@@ -1038,7 +1083,7 @@ function SendMediaForm({
         rows={2}
       />
 
-      {isDocument && (
+      {!isLink && isDocument && (
         <div>
           <label className="mb-1 block text-xs text-muted-foreground">
             {t("filenameLabel")}

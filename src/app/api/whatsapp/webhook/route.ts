@@ -1,7 +1,7 @@
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
-import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
+import { getMediaUrl, downloadMedia, sendTypingIndicator } from '@/lib/whatsapp/meta-api'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
@@ -246,6 +246,9 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       if (!value.messages || !value.contacts) continue
 
       const phoneNumberId = value.metadata.phone_number_id
+      console.log(
+        `[webhook] raw phone_number_id="${phoneNumberId}" length=${phoneNumberId.length} typeof=${typeof phoneNumberId}`,
+      )
 
       // Find user's config by phone_number_id. `.single()` returns
       // PGRST116 for both 0 rows AND ≥2 rows — distinguish them so
@@ -289,6 +292,11 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
         const contact = value.contacts[i] || value.contacts[0]
+        void sendTypingIndicator({
+          phoneNumberId,
+          accessToken: decryptedAccessToken,
+          messageId: message.id,
+        })
 
         await processMessage(
           message,
@@ -792,6 +800,7 @@ async function processMessage(
         // Only set on interactive taps; drives the interactive_reply
         // trigger's exact-id match.
         interactive_reply_id: interactiveReplyId ?? undefined,
+         message_id: message.id,   // ADD THIS
       },
     }).catch((err) => console.error('[automations] dispatch failed:', err))
   }

@@ -33,6 +33,8 @@ import {
   ArrowUp,
   MousePointerClick,
   List,
+  Mic,
+  Image as ImageIcon,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -62,6 +64,7 @@ import {
 } from "@/components/interactive/interactive-builder"
 import { interactivePayloadPreviewText } from "@/lib/whatsapp/interactive"
 import { createClient } from "@/lib/supabase/client"
+import { uploadAccountMedia, MEDIA_MAX_BYTES_BY_KIND } from "@/lib/storage/upload-media"
 import { cn } from "@/lib/utils"
 
 // ------------------------------------------------------------
@@ -99,6 +102,8 @@ interface StepMeta {
 
 const STEP_META: Record<AutomationStepType, StepMeta> = {
   send_message: { label: "send_message", icon: MessageSquare, border: "border-l-primary" },
+  send_voice: { label: "send_voice", icon: Mic, border: "border-l-primary" },
+  send_media: { label: "send_media", icon: ImageIcon, border: "border-l-primary" },
   send_buttons: { label: "send_buttons", icon: MousePointerClick, border: "border-l-primary" },
   send_list: { label: "send_list", icon: List, border: "border-l-primary" },
   send_template: { label: "send_template", icon: FileText, border: "border-l-primary" },
@@ -115,6 +120,8 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
 
 const ADDABLE_STEPS: AutomationStepType[] = [
   "send_message",
+  "send_voice",
+  "send_media",
   "send_buttons",
   "send_list",
   "send_template",
@@ -165,6 +172,10 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
   switch (type) {
     case "send_message":
       return { text: "" }
+    case "send_voice":
+      return { media_url: "" }
+    case "send_media":
+      return { media_kind: "image", media_url: "", caption: "" }
     case "send_buttons":
       return toStepConfig(blankButtonsPayload())
     case "send_list":
@@ -194,13 +205,15 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
 }
 
 // ------------------------------------------------------------
-// Account resources (tags, members, approved templates, pipelines)
+// Account resources (tags, members, approved templates, pipelines,
+// contacts)
 //
 // Loaded once at the builder root and shared via context so the
-// tag / agent / template pickers below can offer existing resources
-// by name instead of asking the user to paste raw UUIDs. Every picker
-// falls back to a raw input when its list is empty (fresh account or
-// an older deployment), so an automation is always authorable.
+// tag / agent / template / contact pickers below can offer existing
+// resources by name instead of asking the user to paste raw UUIDs.
+// Every picker falls back to a raw input when its list is empty
+// (fresh account or an older deployment), so an automation is always
+// authorable.
 // ------------------------------------------------------------
 
 interface AutomationResources {
@@ -210,6 +223,7 @@ interface AutomationResources {
   customFields: CustomField[]
   pipelines: PipelineOption[]
   stages: PipelineStageOption[]
+  contacts: ContactOption[]
 }
 
 interface PipelineOption {
@@ -224,6 +238,13 @@ interface PipelineStageOption {
   position: number
 }
 
+/** Minimal contact shape for the time_based trigger's "which contact
+ *  should this scheduled automation message" picker. */
+interface ContactOption {
+  id: string
+  name: string | null
+}
+
 const ResourcesContext = createContext<AutomationResources>({
   tags: [],
   members: [],
@@ -231,6 +252,7 @@ const ResourcesContext = createContext<AutomationResources>({
   customFields: [],
   pipelines: [],
   stages: [],
+  contacts: [],
 })
 
 function useResources(): AutomationResources {
@@ -244,17 +266,20 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
   const [customFields, setCustomFields] = useState<CustomField[]>([])
   const [pipelines, setPipelines] = useState<PipelineOption[]>([])
   const [stages, setStages] = useState<PipelineStageOption[]>([])
+  const [contacts, setContacts] = useState<ContactOption[]>([])
 
   useEffect(() => {
     let cancelled = false
     const supabase = createClient()
 
-    // Tags, templates and custom fields come straight from the DB — RLS
-    // scopes them to the caller's account. Only APPROVED templates can
-    // actually be sent (anything else 400s at send time), matching the
-    // broadcast picker.
+    // Tags, templates, custom fields, and contacts come straight from
+    // the DB — RLS scopes them to the caller's account. Only APPROVED
+    // templates can actually be sent (anything else 400s at send
+    // time), matching the broadcast picker. Contacts are capped at
+    // 200 and name-sorted — this is a picker for a single scheduled
+    // recipient, not a full contact browser.
     void (async () => {
-      const [tagsRes, templatesRes, customFieldsRes, pipelinesRes, stagesRes] =
+      const [tagsRes, templatesRes, customFieldsRes, pipelinesRes, stagesRes, contactsRes] =
         await Promise.all([
           supabase.from("tags").select("*").order("name"),
           supabase
@@ -268,6 +293,7 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
             .from("pipeline_stages")
             .select("id, name, pipeline_id, position")
             .order("position"),
+          supabase.from("contacts").select("id, name").order("name").limit(200),
         ])
       if (cancelled) return
       setTags((tagsRes.data as TagRecord[] | null) ?? [])
@@ -275,6 +301,7 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
       setCustomFields((customFieldsRes.data as CustomField[] | null) ?? [])
       setPipelines((pipelinesRes.data as PipelineOption[] | null) ?? [])
       setStages((stagesRes.data as PipelineStageOption[] | null) ?? [])
+      setContacts((contactsRes.data as ContactOption[] | null) ?? [])
     })()
 
     // Members go through the API so we inherit its email-visibility
@@ -298,7 +325,7 @@ function ResourcesProvider({ children }: { children: ReactNode }) {
 
   return (
     <ResourcesContext.Provider
-      value={{ tags, members, templates, customFields, pipelines, stages }}
+      value={{ tags, members, templates, customFields, pipelines, stages, contacts }}
     >
       {children}
     </ResourcesContext.Provider>
@@ -440,6 +467,234 @@ function AgentSelect({
         <option value={value}>{t("agents.unknown", { id: value })}</option>
       )}
     </select>
+  )
+}
+
+/** Contact dropdown by name, storing the contact's id. Used by the
+ *  time_based trigger to pick who a scheduled automation should
+ *  message — a time_based trigger has no inbound event to derive a
+ *  contact from, so it must be fixed at authoring time. Falls back to
+ *  a raw id input when the contact list is unavailable or empty. */
+function ContactSelect({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { contacts } = useResources()
+  if (contacts.length === 0) {
+    return (
+      <Input
+        placeholder="Contact id"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="bg-muted text-foreground"
+      />
+    )
+  }
+  const selected = contacts.find((c) => c.id === value)
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={SELECT_CLASS}
+    >
+      <option value="">Select a contact…</option>
+      {contacts.map((c) => (
+        <option key={c.id} value={c.id}>
+          {c.name || c.id}
+        </option>
+      ))}
+      {value && !selected && (
+        <option value={value}>Unknown contact ({value})</option>
+      )}
+    </select>
+  )
+}
+
+/** Upload-a-file voice note picker for the send_voice step. Reuses the
+ *  same account-scoped chat-media bucket + uploadAccountMedia helper
+ *  the inbox composer's voice recorder uses, so the resulting file
+ *  plays back identically as a WhatsApp voice note. Meta has no
+ *  template header type for audio, so this step only works on
+ *  event-driven triggers (e.g. keyword_match) where the automation
+ *  fires inside the customer's 24h window — not on time_based. */
+function VoiceStepEditor({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (mediaUrl: string) => void
+}) {
+  const [uploading, setUploading] = useState(false)
+
+  async function handleFile(file: File | undefined) {
+    if (!file) return
+    if (file.size > MEDIA_MAX_BYTES_BY_KIND.audio) {
+      toast.error(
+        `File is ${(file.size / 1024 / 1024).toFixed(1)} MB — audio limit is ${Math.round(
+          MEDIA_MAX_BYTES_BY_KIND.audio / 1024 / 1024,
+        )} MB.`,
+      )
+      return
+    }
+    setUploading(true)
+    try {
+      const { publicUrl } = await uploadAccountMedia("chat-media", file)
+      onChange(publicUrl)
+      toast.success("Voice note uploaded")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Upload failed.")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <FieldBlock label="Voice note">
+      <input
+        type="file"
+        accept="audio/*"
+        disabled={uploading}
+        onChange={(e) => void handleFile(e.target.files?.[0])}
+        className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-xs file:text-foreground"
+      />
+      {uploading && (
+        <p className="mt-1 text-[11px] text-muted-foreground">Uploading…</p>
+      )}
+      {value && !uploading && (
+        <audio src={value} controls className="mt-2 w-full" />
+      )}
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        Only works on event-driven triggers (e.g. keyword match). WhatsApp
+        has no template format for audio, so this can&apos;t send outside
+        the customer&apos;s 24-hour window the way Send Template can.
+      </p>
+    </FieldBlock>
+  )
+}
+
+/** Photo / video / document picker for the send_media step. Same
+ *  upload flow as VoiceStepEditor (uploadAccountMedia into the
+ *  chat-media bucket), but adds a media-kind selector that both
+ *  drives the file picker's accept filter and the per-kind byte
+ *  ceiling from MEDIA_MAX_BYTES_BY_KIND. Caption is offered for all
+ *  three kinds; filename only matters for documents (Meta shows it
+ *  as the file name in the recipient's chat). Same 24h-window caveat
+ *  as voice — no WhatsApp template header type covers arbitrary
+ *  media the way send_template covers text. */
+function MediaStepEditor({
+  mediaKind,
+  mediaUrl,
+  caption,
+  filename,
+  onChange,
+}: {
+  mediaKind: "image" | "video" | "document"
+  mediaUrl: string
+  caption: string
+  filename: string
+  onChange: (patch: {
+    media_kind?: "image" | "video" | "document"
+    media_url?: string
+    caption?: string
+    filename?: string
+  }) => void
+}) {
+  const [uploading, setUploading] = useState(false)
+
+  const acceptFor = (kind: "image" | "video" | "document") =>
+    kind === "image" ? "image/*" : kind === "video" ? "video/*" : undefined
+
+  async function handleFile(file: File | undefined) {
+    if (!file) return
+    const max = MEDIA_MAX_BYTES_BY_KIND[mediaKind]
+    if (file.size > max) {
+      toast.error(
+        `File is ${(file.size / 1024 / 1024).toFixed(1)} MB — ${mediaKind} limit is ${Math.round(
+          max / 1024 / 1024,
+        )} MB.`,
+      )
+      return
+    }
+    setUploading(true)
+    try {
+      const { publicUrl } = await uploadAccountMedia("chat-media", file)
+      onChange({ media_url: publicUrl, filename: mediaKind === "document" ? file.name : undefined })
+      toast.success("File uploaded")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Upload failed.")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <>
+      <FieldBlock label="Media type">
+        <select
+          value={mediaKind}
+          onChange={(e) => {
+            const next = e.target.value as "image" | "video" | "document"
+            // Switching kind invalidates the previous file — Meta
+            // rejects a mismatched kind/content-type pairing.
+            onChange({ media_kind: next, media_url: "", filename: undefined })
+          }}
+          className={SELECT_CLASS}
+        >
+          <option value="image">Photo</option>
+          <option value="video">Video</option>
+          <option value="document">Document (PDF, etc.)</option>
+        </select>
+      </FieldBlock>
+
+      <FieldBlock label="File">
+        <input
+          type="file"
+          accept={acceptFor(mediaKind)}
+          disabled={uploading}
+          onChange={(e) => void handleFile(e.target.files?.[0])}
+          className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-xs file:text-foreground"
+        />
+        {uploading && (
+          <p className="mt-1 text-[11px] text-muted-foreground">Uploading…</p>
+        )}
+        {mediaUrl && !uploading && (
+          <div className="mt-2">
+            {mediaKind === "image" ? (
+              <img src={mediaUrl} alt="" className="max-h-40 rounded-lg" />
+            ) : mediaKind === "video" ? (
+              <video src={mediaUrl} controls className="max-h-40 rounded-lg" />
+            ) : (
+              <a
+                href={mediaUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-primary underline"
+              >
+                {filename || "View uploaded file"}
+              </a>
+            )}
+          </div>
+        )}
+      </FieldBlock>
+
+      <FieldBlock label="Caption (optional)">
+        <Input
+          value={caption}
+          onChange={(e) => onChange({ caption: e.target.value })}
+          placeholder="Shown alongside the file"
+          className="bg-muted text-foreground"
+        />
+      </FieldBlock>
+
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        Only works on event-driven triggers (e.g. keyword match). WhatsApp
+        has no template format for arbitrary media, so this can&apos;t send
+        outside the customer&apos;s 24-hour window the way Send Template can.
+      </p>
+    </>
   )
 }
 
@@ -861,21 +1116,37 @@ function TriggerCard({
               </div>
             )}
             {type === "time_based" && (
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  {t("schedule")}
-                </label>
-                <Input
-                  placeholder="Cron expression or HH:mm"
-                  value={(config.schedule as string) ?? ""}
-                  onChange={(e) =>
-                    onConfigChange({ ...config, schedule: e.target.value })
-                  }
-                  className="bg-muted text-foreground"
-                />
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {t("scheduleHint")}
-                </p>
+              <div className="space-y-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                    Contact
+                  </label>
+                  <ContactSelect
+                    value={(config.contact_id as string) ?? ""}
+                    onChange={(v) => onConfigChange({ ...config, contact_id: v })}
+                  />
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Who this scheduled automation sends to. A time-based
+                    trigger has no inbound message to derive a contact
+                    from, so it has to be fixed here.
+                  </p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                    {t("schedule")}
+                  </label>
+                  <Input
+                    placeholder="Cron expression or HH:mm"
+                    value={(config.schedule as string) ?? ""}
+                    onChange={(e) =>
+                      onConfigChange({ ...config, schedule: e.target.value })
+                    }
+                    className="bg-muted text-foreground"
+                  />
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    {t("scheduleHint")}
+                  </p>
+                </div>
               </div>
             )}
           </div>
@@ -1114,7 +1385,7 @@ function StepRenderer({
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                 {isCondition ? "Condition" : step.step_type === "wait" ? "Wait" : "Action"}
               </div>
-              <div className="truncate text-sm font-medium text-foreground">{t(`steps.${meta.label}`)}</div>
+              <div className="truncate text-sm font-medium text-foreground">{t.has(`steps.${meta.label}`) ? t(`steps.${meta.label}`) : meta.label}</div>
               <div className="truncate text-[11px] text-muted-foreground">{previewFor(step)}</div>
             </div>
             <ChevronDown
@@ -1154,7 +1425,7 @@ function StepRenderer({
                   onClick={() => props.deleteStepAt(path)}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
-                  {t("delete", { defaultValue: "Delete" })}
+                  {t.has("delete") ? t("delete") : "Delete"}
                 </Button>
               </div>
             </div>
@@ -1253,7 +1524,9 @@ function AddButton({ onPick }: { onPick: (t: AutomationStepType) => void }) {
             return (
               <DropdownMenuItem key={tp} onClick={() => onPick(tp)}>
                 <Icon className="h-4 w-4" />
-                {t(`steps.${STEP_META[tp].label}`)}
+                {t.has(`steps.${STEP_META[tp].label}`)
+                  ? t(`steps.${STEP_META[tp].label}`)
+                  : STEP_META[tp].label}
               </DropdownMenuItem>
             )
           })}
@@ -1292,16 +1565,37 @@ function StepEditor({
           />
         </FieldBlock>
       )
+    case "send_voice":
+      return (
+        <VoiceStepEditor
+          value={(cfg.media_url as string) ?? ""}
+          onChange={(v) => set({ media_url: v })}
+        />
+      )
+    case "send_media":
+      return (
+        <MediaStepEditor
+          mediaKind={(cfg.media_kind as "image" | "video" | "document") ?? "image"}
+          mediaUrl={(cfg.media_url as string) ?? ""}
+          caption={(cfg.caption as string) ?? ""}
+          filename={(cfg.filename as string) ?? ""}
+          onChange={(patch) => set(patch)}
+        />
+      )
     case "send_buttons":
     case "send_list":
       // The whole step_config IS the interactive payload; the shared
       // builder edits it in place (and enforces Meta's limits + preview).
+      // layout="stacked" because this card is only ~300px wide — the
+      // builder's default md:flex-row responds to the browser viewport,
+      // not this card's width, and would squeeze the form into a sliver.
       return (
         <InteractiveBuilder
           value={asInteractive(cfg)}
           onChange={(payload) =>
             onChange({ ...step, step_config: toStepConfig(payload) })
           }
+          layout="stacked"
         />
       )
     case "send_template":
@@ -1483,7 +1777,9 @@ function StepEditor({
     case "close_conversation":
       return (
         <p className="text-xs text-muted-foreground">
-          {t("config.closeConversationHint", { defaultValue: "Sets the conversation status to \"closed\". No configuration needed." })}
+          {t.has("config.closeConversationHint")
+            ? t("config.closeConversationHint")
+            : 'Sets the conversation status to "closed". No configuration needed.'}
         </p>
       )
     default:
@@ -1510,6 +1806,10 @@ function previewFor(step: BuilderStep): string {
   switch (step.step_type) {
     case "send_message":
       return (step.step_config.text as string) || "no text yet"
+    case "send_voice":
+      return (step.step_config.media_url as string) ? "voice note attached" : "no recording yet"
+    case "send_media":
+      return (step.step_config.media_url as string) ? `${step.step_config.media_kind ?? "file"} attached` : "no file yet"
     case "send_buttons":
     case "send_list":
       return interactivePayloadPreviewText(asInteractive(step.step_config)) || "no body yet"

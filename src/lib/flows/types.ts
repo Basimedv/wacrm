@@ -93,6 +93,12 @@ export interface SendMediaNodeConfig {
    * at upload time; the user can edit it.
    */
   filename?: string;
+  /**
+   * When true, media_url is a pasted external link (e.g. YouTube,
+   * Instagram) rather than an uploaded file — sent as a plain text
+   * message instead of a Meta media upload.
+   */
+  is_link?: boolean;
   /** Auto-advance target after the send lands at Meta. */
   next_node_key: string;
 }
